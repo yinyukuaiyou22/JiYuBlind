@@ -144,7 +144,7 @@ struct _IMAGE_OPTIONAL_HEADER32* get_ptr_optional_headers_x86(struct _IMAGE_NT_H
     return ptr_opt_headers;
 }
 
-struct _IMAGE_EXPORT_DIRECTORY32* get_ptr_eat_x86(void* dll_base, struct _IMAGE_OPTIONAL_HEADER32* ptr_optional_headers) {
+struct _IMAGE_EXPORT_DIRECTORY* get_ptr_eat_x86(void* dll_base, struct _IMAGE_OPTIONAL_HEADER32* ptr_optional_headers) {
     if (dll_base == NULL || ptr_optional_headers == NULL) {
         return NULL;
     }
@@ -155,7 +155,7 @@ struct _IMAGE_EXPORT_DIRECTORY32* get_ptr_eat_x86(void* dll_base, struct _IMAGE_
     if (eat_rva == 0 || eat_size == 0) {
         return NULL;
     }
-    struct _IMAGE_EXPORT_DIRECTORY32* ptr_eat = (struct _IMAGE_EXPORT_DIRECTORY32*)((uintptr_t)dll_base + eat_rva);
+    struct _IMAGE_EXPORT_DIRECTORY* ptr_eat = (struct _IMAGE_EXPORT_DIRECTORY*)((uintptr_t)dll_base + eat_rva);
     return ptr_eat;
 }
 
@@ -169,7 +169,7 @@ DWORD get_rva_from_eat_by_hash(void* dll_base, struct _IMAGE_EXPORT_DIRECTORY* p
 
     for (DWORD i = 0; i < nr_name; ++i) {
         const char* ptr_curr_name = (const char*)((uintptr_t)dll_base + table_name[i]);
-        int len = strlen(ptr_curr_name);
+        int len = (int)strlen(ptr_curr_name);
         uint32_t curr_hash = murmur_hash(ptr_curr_name, len, HASH_SEED);
 
         if (curr_hash == func_hash) {
@@ -235,7 +235,7 @@ ULONG_PTR get_target_proc_dll_base(HANDLE proc_handle,DWORD pid,const wchar_t *t
     //    PROCESS_VM_OPERATION | PROCESS_VM_WRITE |       // 用于内存分配和写入Shellcode
     //    PROCESS_CREATE_THREAD, FALSE, pid);
     if (proc_handle == NULL) {
-        return NULL;
+        return 0;
     }
     BOOL is_wow_64 = FALSE;
     IsWow64Process(proc_handle, &is_wow_64);
@@ -448,7 +448,10 @@ bool inject_set_window_display_affinity(HANDLE proc_handle, DWORD pid, HWND targ
     bool ok = (wait_ret == WAIT_OBJECT_0);
 
     CloseHandle(remote_thread);
-    VirtualFreeEx(proc_handle, remote_code, 0, MEM_RELEASE);
+    // 远程线程未结束时不能释放 shellcode 内存，否则目标进程可能在执行已释放的代码时崩溃
+    if (ok) {
+        VirtualFreeEx(proc_handle, remote_code, 0, MEM_RELEASE);
+    }
     return ok;
 }
 

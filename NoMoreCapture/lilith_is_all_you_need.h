@@ -2,6 +2,7 @@
 
 
 #include <Windows.h>
+#include <commdlg.h>
 #include <stdbool.h>
 #include <strsafe.h>
 #include <windowsx.h>
@@ -9,6 +10,7 @@
 #include <intsafe.h>
 #include <intrin.h>
 #include "stb_image.h"
+#include "stb_image_resize2.h"
 #include <psapi.h>
 #include "resource.h"
 #include <commctrl.h>
@@ -81,6 +83,10 @@ struct context {
         int img_y;
         int cnt_channels;
     };
+    struct cfg_ctx {
+        wchar_t background_path[MAX_PATH];  // 自定义背景图路径，空串表示使用内置背景
+        int scale_percent;                  // 背景缩放百分比，100 = 原始大小
+    };
     struct misc_ctx {
         POINT pt_mouse_down;
         bool is_mouse_down;
@@ -126,6 +132,14 @@ void clean_context(struct context* ptr_ctx);
 bool add_tray_icon(struct context* ptr_ctx);
 bool init_panel(struct context* ptr_ctx);
 
+// 背景图 / 缩放 / 配置 / 预览
+void draw_png_with_premulitply_alpha(struct context* ptr_ctx);
+bool load_background_image(struct context* ptr_ctx);
+bool rebuild_background(struct context* ptr_ctx);
+void show_preview_window(const wchar_t* background_path, int scale_percent);
+void config_load(struct context* ptr_ctx);
+void config_save(struct context* ptr_ctx);
+
 //DLGPROC dlg_proc; // 回调函数
 
 #define CHECK_BIT(var, bit_pos)  (((var) >> (bit_pos)) & 1U)
@@ -135,11 +149,13 @@ bool init_panel(struct context* ptr_ctx);
 
 struct context* g_ptr_ctx;
 
-void remove_anti_capture(hwnd, ptr_ctx);
+void remove_anti_capture(HWND hwnd, struct context* ptr_ctx);
 void apply_anti_capture(HWND hwnd, struct context* ptr_ctx);
 bool is_target_window(HWND hwnd, struct context* ptr_ctx);
 BOOL CALLBACK enum_windows_proc_add(HWND hwnd, LPARAM lparam);
 BOOL CALLBACK enum_windows_proc_remove(HWND hwnd, LPARAM lparam);
+
+void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
 
 bool init_inject_ctx(struct inject_context* ptr_ctx);
 

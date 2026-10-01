@@ -144,6 +144,7 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="config.c" />
     <ClCompile Include="control_panel.c" />
     <ClCompile Include="core_implement.c" />
     <ClCompile Include="dbg.c" />
@@ -151,6 +152,7 @@
     <ClCompile Include="main.c" />
     <ClCompile Include="main_window_proc.c" />
     <ClCompile Include="stbi_imp.c" />
+    <ClCompile Include="stbir_imp.c" />
     <ClCompile Include="tray.c" />
     <ClCompile Include="utils.c" />
   </ItemGroup>
@@ -160,6 +162,7 @@
     <ClInclude Include="lilith_is_all_you_need.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="stb_image.h" />
+    <ClInclude Include="stb_image_resize2.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="NoMoreCapture.rc" />

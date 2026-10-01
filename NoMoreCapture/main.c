@@ -1,4 +1,4 @@
-﻿#include "lilith_is_all_you_need.h"
+#include "lilith_is_all_you_need.h"
 
 inline void dbg_ulw(struct context* ptr_ctx) {
     if (ptr_ctx == NULL || ptr_ctx->bits == NULL) {
@@ -15,25 +15,6 @@ inline void dbg_ulw(struct context* ptr_ctx) {
     }
 }
 
-inline void draw_png_with_premulitply_alpha(struct context* ptr_ctx) {
-    if (ptr_ctx == NULL || ptr_ctx->img_pixels == NULL) {
-        return;
-    }
-    BYTE* ptr_img = ptr_ctx->img_pixels;
-    BYTE* ptr_bits = ptr_ctx->bits;
-    for (int i = 0; i < ptr_ctx->img_x * ptr_ctx->img_y; i++) {
-        BYTE r = ptr_img[i * 4 + 0]; // r
-        BYTE g = ptr_img[i * 4 + 1]; // g
-        BYTE b = ptr_img[i * 4 + 2]; // b
-        BYTE a = ptr_img[i * 4 + 3]; // a
-        ptr_bits[i * 4 + 0] = b * a/ 255; // B
-        ptr_bits[i * 4 + 1] = g * a / 255; // G
-        ptr_bits[i * 4 + 2] = r * a / 255; // R
-        ptr_bits[i * 4 + 3] = a; // A
-    }
-}
-
-
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -42,15 +23,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
 
-    //INITCOMMONCONTROLSEX icex;
-    //icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
-    //icex.dwICC = ICC_HOTKEY_CLASS | ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
-    //InitCommonControlsEx(&icex);
+    // 注册热键等通用控件类（必须在使用 msctls_hotkey32 控件之前调用，否则老板键热键控件无法创建）
+    INITCOMMONCONTROLSEX icex;
+    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icex.dwICC = ICC_HOTKEY_CLASS | ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&icex);
 
     struct context ctx = { 0 };
     ctx.instance = hInstance; // 装入instance
     bool ret = false;
     BOOL win_ret = 0;
+    config_load(&ctx);
     init_img_ctx(&ctx);
     load_ctx_basic(&ctx);
     WNDCLASSEXW wnd_class = { 0 };
@@ -101,6 +84,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 
     g_ptr_ctx = &ctx; // 为了给钩子
+    // 注册 WinEvent 钩子：全局模式下自动保护之后新创建/显示的窗口
+    ctx.win_hook = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     ctx.hdc = CreateCompatibleDC(NULL);
     SelectObject(ctx.hdc, ctx.bitmap);
     POINT window_pt = { ctx.window_x,ctx.window_y };

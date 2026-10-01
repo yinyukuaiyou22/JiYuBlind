@@ -140,10 +140,17 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 			if (picture_box_handle == NULL) {
 				return (INT_PTR)FALSE;
 			}
-			CheckDlgButton(hwnd, IDC_WHITELIST_RAD, BST_CHECKED);
-			CheckDlgButton(hwnd, IDC_TRANSPARENT_RAD, BST_CHECKED);
+			// 从配置文件恢复界面状态
+			CheckDlgButton(hwnd, IDC_WHITELIST_RAD, CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) != 0 ? BST_CHECKED : BST_UNCHECKED);
+			CheckDlgButton(hwnd, IDC_ALL_WINDOW, CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) != 0 ? BST_UNCHECKED : BST_CHECKED);
+			CheckDlgButton(hwnd, IDC_TRANSPARENT_RAD, CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_d) != 0 ? BST_CHECKED : BST_UNCHECKED);
+			CheckDlgButton(hwnd, IDC_BLACK_RAD, CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_d) != 0 ? BST_UNCHECKED : BST_CHECKED);
+			CheckDlgButton(hwnd, IDC_ENABLE_BOSS_KEY, CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_e) != 0 ? BST_CHECKED : BST_UNCHECKED);
+			SendDlgItemMessageW(hwnd, IDC_HOTKEY_BOSS, HKM_SETHOTKEY, ptr_ctx->panel_ctx.hotkey, 0);
+			SetDlgItemTextW(hwnd, IDC_BG_PATH, ptr_ctx->background_path);
+			SetDlgItemInt(hwnd, IDC_BG_SCALE, ptr_ctx->scale_percent, FALSE);
 			SendDlgItemMessageW(hwnd, IDC_FIND_BOX, STM_SETIMAGE, (WPARAM)IMAGE_ICON, (LPARAM)ptr_ctx->panel_ctx.pending_ico);
-			SetWindowLongPtrW(picture_box_handle, GWLP_USERDATA, (struct context*)ptr_ctx);
+			SetWindowLongPtrW(picture_box_handle, GWLP_USERDATA, (LONG_PTR)ptr_ctx);
 			ptr_ctx->panel_ctx.prev_picture_box_proc = (WNDPROC)SetWindowLongPtr(picture_box_handle, GWLP_WNDPROC, (LONG_PTR)pic_subclass_proc);
 		}
 		return (INT_PTR)TRUE;
@@ -237,12 +244,12 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 				ptr_ctx->panel_ctx.virtual_code = LOBYTE(result); // 虚拟键码
 				ptr_ctx->panel_ctx.modifiers = HIBYTE(result); // 修饰
 				if (ptr_ctx->panel_ctx.virtual_code == VK_F12) {
-					if (ptr_ctx->panel_ctx.hotkey == 0 || ptr_ctx->panel_ctx.modifiers == HOTKEYF_SHIFT) {
+					if (ptr_ctx->panel_ctx.modifiers == 0 || ptr_ctx->panel_ctx.modifiers == HOTKEYF_SHIFT) {
 						MessageBox(hwnd, L"F12和Shift+F12系统保留，无法注册", L"NoMoreCapture", MB_SYSTEMMODAL | MB_ICONWARNING);
 						return FALSE; // 不往下执行逻辑
 					}
-					break;
 				}
+				// Ctrl+F12 等组合可正常注册，继续往下执行
 				if (ptr_ctx->panel_ctx.virtual_code == 0 && ptr_ctx->panel_ctx.modifiers == 0) {
 					MessageBox(hwnd, L"没有设置热键，默认关闭老板键", L"NoMoreCapture", MB_SYSTEMMODAL | MB_ICONWARNING);
 					CLEAR_BIT(ptr_ctx->panel_ctx.bitwise, f_e);
@@ -280,6 +287,9 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 			}
 			else {
 				CLEAR_BIT(ptr_ctx->panel_ctx.bitwise, f_h);
+			}
+			if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_h) == 1) {
+				config_save(ptr_ctx); // 立即保存配置
 			}
 			HWND dlg_hwnd = ptr_ctx->panel_ctx.panel_hwnd;
 			EnableWindow(GetDlgItem(hwnd, IDC_APPLY_CHANGE), FALSE);
@@ -344,7 +354,56 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 			else {
 				free(task);
 				EnableWindow(GetDlgItem(hwnd, IDC_APPLY_CHANGE), TRUE);
+				EnableWindow(GetDlgItem(hwnd, IDC_ADD_MANUAL), TRUE);
+				EnableWindow(GetDlgItem(hwnd, IDC_REMOVE_MANUAL), TRUE);
 			}
+			break;
+		}
+		case IDC_BG_CHOOSE: {
+			OPENFILENAMEW ofn = { 0 };
+			wchar_t file[MAX_PATH] = { 0 };
+			ofn.lStructSize = sizeof(ofn);
+			ofn.hwndOwner = hwnd;
+			ofn.lpstrFilter = L"图片文件\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tga\0所有文件\0*.*\0";
+			ofn.lpstrFile = file;
+			ofn.nMaxFile = MAX_PATH;
+			ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+			if (GetOpenFileNameW(&ofn)) {
+				StringCchCopyW(ptr_ctx->background_path, MAX_PATH, file);
+				SetDlgItemTextW(hwnd, IDC_BG_PATH, ptr_ctx->background_path);
+			}
+			break;
+		}
+		case IDC_BG_APPLY: {
+			wchar_t path[MAX_PATH] = { 0 };
+			GetDlgItemTextW(hwnd, IDC_BG_PATH, path, MAX_PATH);
+			BOOL translated = FALSE;
+			int scale = (int)GetDlgItemInt(hwnd, IDC_BG_SCALE, &translated, FALSE);
+			if (!translated || scale < 5 || scale > 1000) {
+				scale = 100;
+			}
+			StringCchCopyW(ptr_ctx->background_path, MAX_PATH, path);
+			ptr_ctx->scale_percent = scale;
+			bool ok = rebuild_background(ptr_ctx);
+			SetDlgItemTextW(hwnd, IDC_BG_PATH, ptr_ctx->background_path);
+			SetDlgItemInt(hwnd, IDC_BG_SCALE, ptr_ctx->scale_percent, FALSE);
+			if (!ok) {
+				MessageBoxW(hwnd, L"应用背景失败", L"NoMoreCapture", MB_SYSTEMMODAL | MB_ICONWARNING);
+			}
+			if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_h) == 1) {
+				config_save(ptr_ctx);
+			}
+			break;
+		}
+		case IDC_BG_PREVIEW: {
+			wchar_t path[MAX_PATH] = { 0 };
+			GetDlgItemTextW(hwnd, IDC_BG_PATH, path, MAX_PATH);
+			BOOL translated = FALSE;
+			int scale = (int)GetDlgItemInt(hwnd, IDC_BG_SCALE, &translated, FALSE);
+			if (!translated || scale < 5 || scale > 1000) {
+				scale = 100;
+			}
+			show_preview_window(path, scale);
 			break;
 		}
 		}
@@ -376,7 +435,7 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 				EnumWindows(enum_windows_proc_remove, (LPARAM)ptr_ctx);
 			}
 			if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_f) == 1) {
-				UnregisterHotKey(hwnd, HOTKEY_ID);
+				UnregisterHotKey(ptr_ctx->window_hwnd, HOTKEY_ID);
 			}
 		}
 		PostQuitMessage(0);

@@ -1,4 +1,4 @@
-﻿//{{NO_DEPENDENCIES}}
+//{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ 生成的包含文件。
 // 供 NoMoreCapture.rc 使用
 //
@@ -26,6 +26,11 @@
 #define IDC_HOTKEY_BOSS                 1026
 #define IDC_SAVE_CFG                    1030
 #define IDC_FIND_BOX                    1031
+#define IDC_BG_CHOOSE                   1032
+#define IDC_BG_PATH                     1033
+#define IDC_BG_SCALE                    1034
+#define IDC_BG_PREVIEW                  1035
+#define IDC_BG_APPLY                    1036
 #define ID_40001                        40001
 #define ID_40002                        40002
 #define ID_LILITHISALLYOUNEED_40003     40003
@@ -59,7 +64,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        111
 #define _APS_NEXT_COMMAND_VALUE         40027
-#define _APS_NEXT_CONTROL_VALUE         1032
+#define _APS_NEXT_CONTROL_VALUE         1037
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

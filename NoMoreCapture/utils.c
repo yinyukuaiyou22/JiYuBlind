@@ -15,6 +15,10 @@ void clean_context(struct context* ptr_ctx) {
     if (ptr_ctx == NULL) {
         return;
     }
+    if (ptr_ctx->win_hook) UnhookWinEvent(ptr_ctx->win_hook);
+    if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_h) == 1) {
+        config_save(ptr_ctx); // 退出时保存配置
+    }
     if (ptr_ctx->hdc) DeleteDC(ptr_ctx->hdc);
     if (ptr_ctx->bitmap) DeleteObject(ptr_ctx->bitmap);
     if (ptr_ctx->window_hwnd) DestroyWindow(ptr_ctx->window_hwnd);
