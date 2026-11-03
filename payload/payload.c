@@ -20,10 +20,19 @@ typedef struct JYB_ARGS {
 } JYB_ARGS;
 
 __declspec(dllexport) DWORD WINAPI JybApply(JYB_ARGS* args) {
-    if (args == NULL || args->hwnd == 0) {
-        return 0;
+    DWORD err;
+    if (args == NULL) {
+        return 0xE0000001u;
     }
-    return SetWindowDisplayAffinity((HWND)(ULONG_PTR)args->hwnd, args->affinity) ? 1u : 0u;
+    if (args->hwnd == 0) {
+        return 0xE0000002u;
+    }
+    if (SetWindowDisplayAffinity((HWND)(ULONG_PTR)args->hwnd, args->affinity)) {
+        return 1u;
+    }
+    /* 失败时把 Win32 错误码带回去，0xE0000003 = 有错误码但为 0（不该发生） */
+    err = GetLastError();
+    return err ? err : 0xE0000003u;
 }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {

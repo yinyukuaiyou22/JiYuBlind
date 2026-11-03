@@ -123,26 +123,57 @@ static const BYTE* payload_bytes(bool want64, DWORD* out_size) {
     return (const BYTE*)LockResource(glob);
 }
 
-/* 把内嵌 payload 落到 %TEMP%，返回路径；同一进程内每种位数只写一次 */
-static const wchar_t* payload_temp_path(bool want64) {
-    static wchar_t path32[MAX_PATH] = { 0 };
-    static wchar_t path64[MAX_PATH] = { 0 };
-    wchar_t* slot = want64 ? path64 : path32;
+/* 把内嵌 payload 落到 %TEMP%，返回路径。
+ *
+ * 关键：文件名必须**按目标进程 pid 唯一**。
+ * 早期版本用固定名 jyb_payload_64.dll 且以独占方式(share=0)写入，
+ * 结果第一个目标进程 LoadLibrary 之后该文件映像节被系统锁住，
+ * 后续写入全部返回 ERROR_SHARING_VIOLATION(32)，
+ * DLL 注入路径从第二个窗口起全部失效（全局模式尤其明显）。
+ * 现在改成每个目标进程一个独立文件名，且以共享模式打开。
+ */
+static const wchar_t* payload_temp_path(bool want64, DWORD target_pid) {
+    /* 每个目标进程一份独立文件：缓存 8 个（环形），键 = pid */
+    #define PAYLOAD_CACHE_SLOTS 8
+    static wchar_t cache[PAYLOAD_CACHE_SLOTS][MAX_PATH] = { { 0 } };
+    static DWORD cache_pid[PAYLOAD_CACHE_SLOTS] = { 0 };
+    static bool  cache_64[PAYLOAD_CACHE_SLOTS] = { 0 };
+    static int   cache_next = 0;
+
     const BYTE* data;
     DWORD size = 0;
     wchar_t temp[MAX_PATH] = { 0 };
     HANDLE file;
     DWORD written = 0;
+    int slot_idx;
+    wchar_t* slot;
 
-    if (slot[0] != L'\0') return slot;
+    /* 命中：同 pid + 同位数 */
+    for (slot_idx = 0; slot_idx < PAYLOAD_CACHE_SLOTS; slot_idx++) {
+        if (cache_pid[slot_idx] == target_pid && cache_64[slot_idx] == want64 && cache[slot_idx][0] != L'\0') {
+            DWORD attr = GetFileAttributesW(cache[slot_idx]);
+            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                return cache[slot_idx];
+            }
+            cache[slot_idx][0] = L'\0';
+        }
+    }
 
     data = payload_bytes(want64, &size);
     if (data == NULL || size == 0) return NULL;
 
     GetTempPathW(MAX_PATH, temp);
-    StringCchPrintfW(slot, MAX_PATH, L"%sjyb_payload_%s.dll", temp, want64 ? L"64" : L"32");
+    slot_idx = cache_next;
+    cache_next = (cache_next + 1) % PAYLOAD_CACHE_SLOTS;
+    slot = cache[slot_idx];
+    StringCchPrintfW(slot, MAX_PATH, L"%sjyb_payload_%s_%lu_%lu.dll",
+                     temp, want64 ? L"64" : L"32",
+                     (unsigned long)target_pid, (unsigned long)GetTickCount());
 
-    file = CreateFileW(slot, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
+    /* 共享模式：即使同名文件已被别的进程加载，也能覆盖写入 */
+    file = CreateFileW(slot, GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                       NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
     if (file == INVALID_HANDLE_VALUE) {
         slot[0] = L'\0';
         return NULL;
@@ -153,6 +184,8 @@ static const wchar_t* payload_temp_path(bool want64) {
         slot[0] = L'\0';
         return NULL;
     }
+    cache_pid[slot_idx] = target_pid;
+    cache_64[slot_idx] = want64;
     return slot;
 }
 
@@ -217,7 +250,7 @@ bool inject_via_dll(HANDLE proc_handle, DWORD pid, HWND target_hwnd, DWORD affin
 
     if (proc_handle == NULL || target_hwnd == NULL) return false;
 
-    dll_path = payload_temp_path(target_is_wow64 ? false : true);
+    dll_path = payload_temp_path(target_is_wow64 ? false : true, pid);
     if (dll_path == NULL) { jyb_log(L"payload_temp_path", FALSE, GetLastError()); return false; }
     jyb_log(L"payload_temp_path", TRUE, 0);
 
@@ -289,5 +322,9 @@ bool inject_via_dll(HANDLE proc_handle, DWORD pid, HWND target_hwnd, DWORD affin
 cleanup:
     if (remote_args != NULL) VirtualFreeEx(proc_handle, remote_args, 0, MEM_RELEASE);
     if (remote_path != NULL) VirtualFreeEx(proc_handle, remote_path, 0, MEM_RELEASE);
+    /* 注入失败时清掉临时 DLL，避免 %TEMP% 堆积；成功时不能删（目标进程还映射着它） */
+    if (!ok && dll_path != NULL) {
+        DeleteFileW(dll_path);
+    }
     return ok;
 }
