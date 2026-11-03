@@ -157,7 +157,12 @@ LRESULT CALLBACK lilith_wndproc(
         int wm_id = LOWORD(wparam);
         switch (wm_id) {
         case ID_ABOUT: {
-            MessageBoxW(hwnd, L"开发者 Bad_Dream_UwU", L"JiYuBlind", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(hwnd,
+                L"开发者：Bad_Dream_UwU（原作者）\n\n"
+                L"本项目基于以下开源项目修改而来：\n"
+                L"https://github.com/lilith-is-all-you-need/NoMoreCapture\n\n"
+                L"由银鱼分发，仅限个人使用，如有侵权请联系删除。",
+                L"JiYuBlind - 关于", MB_OK | MB_ICONINFORMATION);
             break;
         }
         case ID_HELP: {
