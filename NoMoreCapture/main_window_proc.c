@@ -1,5 +1,6 @@
 #include "context.h"
 #include "lilith_is_all_you_need.h"
+#include "decoy.h"
 
 enum {
     f_a = 0, // 捕获
@@ -156,24 +157,27 @@ LRESULT CALLBACK lilith_wndproc(
         int wm_id = LOWORD(wparam);
         switch (wm_id) {
         case ID_ABOUT: {
-            MessageBoxW(hwnd, L"开发者 Bad_Dream_UwU", L"NoMoreCapture", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(hwnd, L"开发者 Bad_Dream_UwU", L"JiYuBlind", MB_OK | MB_ICONINFORMATION);
             break;
         }
         case ID_HELP: {
             // TODO:加一个更精良的UI
             const wchar_t* help_text =
-                L"【NoMoreCapture - 使用手册】\n\n"
+                L"【JiYuBlind - 使用手册】\n\n"
                 L"1.目标捕获\n"
                 L"按住控制面板上的雷达图标拖动到目标窗口释放，即可自动识别窗口并添加到白名单列表中。\n\n"
                 L"2.捕获模式设置\n"
                 L"• 白名单模式：仅对列表内添加的窗口生效防截图/录屏。\n"
                 L"• 全局模式：关闭白名单后，强制注入并隐藏除系统核心进程外的所有窗口。\n"
-                L"• 穿透模式：开启时，截图录屏中该窗口会显示为黑色块(WDA_MONITOR)；关闭时，完全透明隐藏(WDA_EXCLUDEFROMCAPTURE)。\n\n"
+                L"• 穿透模式：开启时，截图/录屏中该窗口完全不显示(WDA_EXCLUDEFROMCAPTURE)；关闭时，显示为纯黑块(WDA_MONITOR)。\n\n"
                 L"3.老板键功能\n"
-                L"4.设置热键后（注意避开系统保留按键如F12），按下即可一键隐藏/显示目标窗口，同时隐藏 Lilith 软件自身界面。\n\n"
+                L"4.设置热键后（注意避开系统保留按键如F12），按下即可一键隐藏/显示目标窗口，同时隐藏 JiYuBlind 软件自身界面。\n\n"
                 L"5.注入安全提示\n"
-                L"为了防止系统崩溃黑屏，NoMoreCapture已自动屏蔽对 explorer.exe、dwm.exe 等系统核心进程的注入。";
-            MessageBoxW(hwnd, help_text, L"NoMoreCapture Help", MB_OK | MB_ICONINFORMATION);
+                L"为了防止系统崩溃黑屏，JiYuBlind 已自动屏蔽对 explorer.exe、dwm.exe 等系统核心进程的注入。\n\n"
+                L"6.实验功能：替换画面（托盘菜单开启）\n"
+                L"开启后，受保护窗口在截图/录屏里会被替换成一张预备图（默认是启动时抓的桌面快照），你自己的屏幕完全不受影响。\n"
+                L"注意：只覆盖走 BitBlt / DXGI 桌面复制的抓屏；走 WGC 或自带驱动的录屏可能绕过。";
+            MessageBoxW(hwnd, help_text, L"JiYuBlind 帮助", MB_OK | MB_ICONINFORMATION);
             break;
         }
         case ID_EXIT: {
@@ -194,6 +198,30 @@ LRESULT CALLBACK lilith_wndproc(
         }
         case ID_CALL_PANEL: {
             ShowWindow(ptr_ctx->panel_ctx.panel_hwnd, SW_SHOW);
+            break;
+        }
+        case ID_TOGGLE_DECOY: {
+            /* 实验功能：替换画面。默认关闭，每次开启都会提示风险 */
+            if (ptr_ctx->decoy.active) {
+                decoy_enable(ptr_ctx, false);
+                ptr_ctx->decoy.mode = 0;
+            }
+            else {
+                if (MessageBoxW(hwnd,
+                    L"「替换画面」是实验功能：\n\n"
+                    L"· 只影响截图/录屏结果，你自己的屏幕不受影响\n"
+                    L"· 仅在受保护窗口的区域生效，其余区域仍是真实画面\n"
+                    L"· 部分录屏软件（走 WGC 或自带驱动的）可能绕过\n"
+                    L"· 未指定图片时，会自动抓一张当前桌面作为替身\n\n"
+                    L"确定开启吗？",
+                    L"JiYuBlind - 实验功能", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                    ptr_ctx->decoy.mode = 1;
+                    if (!decoy_enable(ptr_ctx, true)) {
+                        MessageBoxW(hwnd, L"替身画面启动失败（可能是不支持的系统版本）",
+                                    L"JiYuBlind", MB_OK | MB_ICONERROR);
+                    }
+                }
+            }
             break;
         }
         default:

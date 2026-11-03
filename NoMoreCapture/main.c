@@ -1,4 +1,5 @@
 #include "lilith_is_all_you_need.h"
+#include "decoy.h"
 
 inline void dbg_ulw(struct context* ptr_ctx) {
     if (ptr_ctx == NULL || ptr_ctx->bits == NULL) {
@@ -68,6 +69,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         return -1;
     }
 
+    // 替身画面模块：窗口在这里建好但不显示；Mode=1 时立刻开启（会先抓一张桌面快照）
+    if (decoy_init(&ctx)) {
+        if (ctx.decoy.mode == 1) {
+            decoy_enable(&ctx, true);
+        }
+    }
+
     // trick:SetWindowDisplay内部实现会检查有没有LAYERED 这样绕过去 且时机可能很重要
     LONG_PTR curr_ex_style = GetWindowLongPtr(ctx.window_hwnd, GWL_EXSTYLE);
     SetWindowLongPtr(ctx.window_hwnd, GWL_EXSTYLE, curr_ex_style & ~WS_EX_LAYERED);
@@ -83,7 +91,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         return -1;
     }
 
-    g_ptr_ctx = &ctx; // 为了给钩子
+    g_ptr_ctx = &ctx;
+
+    /* 自检用：JYB_TEST_HWND=<十进制窗口句柄> 时，启动就对指定窗口做一次保护，
+       便于在没有 UI 交互的情况下验证注入链路是否真的写进了目标进程 */
+    {
+        wchar_t buf[64] = { 0 };
+        if (GetEnvironmentVariableW(L"JYB_TEST_HWND", buf, 64) > 0) {
+            HWND probe_hwnd = (HWND)(ULONG_PTR)_wcstoui64(buf, NULL, 10);
+            if (probe_hwnd != NULL && IsWindow(probe_hwnd)) {
+                apply_anti_capture(probe_hwnd, &ctx);
+            }
+        }
+    } // 为了给钩子
     // 注册 WinEvent 钩子：全局模式下自动保护之后新创建/显示的窗口
     ctx.win_hook = SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     ctx.hdc = CreateCompatibleDC(NULL);

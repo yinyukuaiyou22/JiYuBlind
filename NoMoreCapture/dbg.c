@@ -18,7 +18,7 @@ void out(const wchar_t* str, int opt)
     default:
         break;
     }
-    MessageBoxW(NULL, str, L"Lilith Dbg opt", type);
+    MessageBoxW(NULL, str, L"JiYuBlind Dbg opt", type);
 }
 
 #endif

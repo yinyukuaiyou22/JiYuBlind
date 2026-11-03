@@ -4,4 +4,5 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="NoMoreCapture/NoMoreCapture.vcxproj" Id="8d3b2c30-2441-4516-9c99-24342bac46a2" />
+  <Project Path="payload/payload.vcxproj" Id="7C1E4B52-9A3D-4F61-8E27-5B0D9A6C3F14" />
 </Solution>

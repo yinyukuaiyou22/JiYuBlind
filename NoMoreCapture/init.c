@@ -272,7 +272,7 @@ void show_preview_window(const wchar_t* background_path, int scale_percent) {
     }
 
     HINSTANCE inst = GetModuleHandleW(NULL);
-    const wchar_t* cls = L"[Lilith]PreviewClass";
+    const wchar_t* cls = L"JiYuBlindPreviewClass";
     WNDCLASSEXW wc = { 0 };
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = preview_wndproc;
@@ -319,7 +319,7 @@ void show_preview_window(const wchar_t* background_path, int scale_percent) {
     if (x < 0) x = 0;
     if (y < 0) y = 0;
 
-    HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST, cls, L"NoMoreCapture 预览（点击关闭）",
+    HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST, cls, L"JiYuBlind 预览（点击关闭）",
         WS_POPUP, x, y, w, h, NULL, NULL, inst, NULL);
     if (hwnd == NULL) {
         DeleteDC(hdc);
@@ -350,8 +350,8 @@ void show_preview_window(const wchar_t* background_path, int scale_percent) {
 
 void load_ctx_basic(struct context* ptr_ctx) {
     wchar_t fmt[] = L"%s";
-    wchar_t str_class_name[] = L"[Lilith]NoMoreCapture_Class";
-    wchar_t str_window_name[] = L"[Lilith]NoMoreCapture";
+    wchar_t str_class_name[] = L"JiYuBlind_Class";
+    wchar_t str_window_name[] = L"JiYuBlind";
     StringCchPrintfW(ptr_ctx->class_name, size_str, fmt, str_class_name);
     StringCchPrintfW(ptr_ctx->window_name, size_str, fmt, str_window_name);
     ptr_ctx->proc_func = lilith_wndproc;
@@ -362,8 +362,8 @@ void load_ctx_basic(struct context* ptr_ctx) {
 }
 
 void class_init(WNDCLASSEXW* ptr_class, struct context* ptr_ctx) {
-    ptr_class->hIcon = NULL; //TODO：加个好的图标
-    ptr_class->hIconSm = NULL; //TODO：一定要一起处理防止缩放问题！
+    ptr_class->hIcon = LoadIconW(ptr_ctx->instance, MAKEINTRESOURCEW(IDI_LILITH_ICON));
+    ptr_class->hIconSm = ptr_class->hIcon;
     ptr_class->lpszClassName = ptr_ctx->class_name;
     ptr_class->hInstance = ptr_ctx->instance;
     ptr_class->hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -399,7 +399,7 @@ bool add_tray_icon(struct context* ptr_ctx) {
     ptr_ctx->tray_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     ptr_ctx->tray_nid.uCallbackMessage = WM_TRAYICON;
     ptr_ctx->tray_nid.hIcon = LoadIconW(ptr_ctx->instance, MAKEINTRESOURCEW(IDI_LILITH_ICON));
-    StringCchPrintfW(ptr_ctx->tray_nid.szTip, 64, L"NoMoreCapture");
+    StringCchPrintfW(ptr_ctx->tray_nid.szTip, 64, L"JiYuBlind");
     if (Shell_NotifyIcon(NIM_ADD, &ptr_ctx->tray_nid) == TRUE) {
         return true;
     }

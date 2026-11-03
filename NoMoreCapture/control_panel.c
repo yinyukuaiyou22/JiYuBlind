@@ -245,13 +245,13 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 				ptr_ctx->panel_ctx.modifiers = HIBYTE(result); // 修饰
 				if (ptr_ctx->panel_ctx.virtual_code == VK_F12) {
 					if (ptr_ctx->panel_ctx.modifiers == 0 || ptr_ctx->panel_ctx.modifiers == HOTKEYF_SHIFT) {
-						MessageBox(hwnd, L"F12和Shift+F12系统保留，无法注册", L"NoMoreCapture", MB_SYSTEMMODAL | MB_ICONWARNING);
+						MessageBox(hwnd, L"F12和Shift+F12系统保留，无法注册", L"JiYuBlind", MB_SYSTEMMODAL | MB_ICONWARNING);
 						return FALSE; // 不往下执行逻辑
 					}
 				}
 				// Ctrl+F12 等组合可正常注册，继续往下执行
 				if (ptr_ctx->panel_ctx.virtual_code == 0 && ptr_ctx->panel_ctx.modifiers == 0) {
-					MessageBox(hwnd, L"没有设置热键，默认关闭老板键", L"NoMoreCapture", MB_SYSTEMMODAL | MB_ICONWARNING);
+					MessageBox(hwnd, L"没有设置热键，默认关闭老板键", L"JiYuBlind", MB_SYSTEMMODAL | MB_ICONWARNING);
 					CLEAR_BIT(ptr_ctx->panel_ctx.bitwise, f_e);
 					if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_f) == 1) { // 之前设置了
 						CLEAR_BIT(ptr_ctx->panel_ctx.bitwise, f_f);
@@ -302,7 +302,7 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 			bool is_exist = false;
 			LRESULT cnt_elems = SendMessageW(list_box_handle, LB_GETCOUNT, 0, 0);
 			if (cnt_elems > 128) {
-				MessageBoxW(hwnd, L"超过了白名单最大上限（128)", L"NoMoreCapture", MB_SYSTEMMODAL | MB_ICONWARNING);
+				MessageBoxW(hwnd, L"超过了白名单最大上限（128)", L"JiYuBlind", MB_SYSTEMMODAL | MB_ICONWARNING);
 				return (INT_PTR)FALSE;
 			}
 			//for (int i = 0; i < 128; i	++) {
@@ -388,7 +388,7 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 			SetDlgItemTextW(hwnd, IDC_BG_PATH, ptr_ctx->background_path);
 			SetDlgItemInt(hwnd, IDC_BG_SCALE, ptr_ctx->scale_percent, FALSE);
 			if (!ok) {
-				MessageBoxW(hwnd, L"应用背景失败", L"NoMoreCapture", MB_SYSTEMMODAL | MB_ICONWARNING);
+				MessageBoxW(hwnd, L"应用背景失败", L"JiYuBlind", MB_SYSTEMMODAL | MB_ICONWARNING);
 			}
 			if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_h) == 1) {
 				config_save(ptr_ctx);

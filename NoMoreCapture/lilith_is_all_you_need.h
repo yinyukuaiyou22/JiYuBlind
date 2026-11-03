@@ -57,6 +57,33 @@ struct inject_context {
     uintptr_t x64_rva;
 };
 
+/* 替身画面上下文：每个受保护窗口在正下方贴一张同尺寸切片，不占桌面，详见 decoy.c 顶部注释 */
+#define DECOY_MAX_SLOTS 32
+
+struct decoy_slot {
+    HWND target;      /* 受保护窗口 */
+    HWND decoy;       /* 贴它正下方的替身窗口 */
+    RECT rect;        /* 上次同步时的窗口矩形 */
+};
+
+struct decoy_ctx {
+    HBITMAP src_bmp;  /* 全屏预备图（替身的素材来源） */
+    HDC     src_dc;
+    void*   src_bits;
+    int     src_x, src_y, src_w, src_h;
+    bool    src_ready;
+
+    struct decoy_slot slots[DECOY_MAX_SLOTS];
+    int     slot_count;
+
+    wchar_t image_path[MAX_PATH];
+    int mode;              /* 0 = 原版（穿透/黑块由 f_d 决定），1 = 替身画面 */
+    bool active;
+    bool ready;
+    DWORD last_park;
+    UINT_PTR timer;    /* 主线程对账定时器 */
+};
+
 
 struct context {
     HINSTANCE instance;
@@ -96,6 +123,7 @@ struct context {
     };
     struct panel_context panel_ctx;
     struct inject_context inject_ctx;
+    struct decoy_ctx decoy;
     HWINEVENTHOOK win_hook;
     HWND target[256];
 };
@@ -109,7 +137,7 @@ LRESULT CALLBACK lilith_wndproc(
     LPARAM lparam
 );
 
-INT_PTR dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam);
+INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam);
 
 enum {
     err = 0,
@@ -158,6 +186,9 @@ BOOL CALLBACK enum_windows_proc_remove(HWND hwnd, LPARAM lparam);
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
 
 bool init_inject_ctx(struct inject_context* ptr_ctx);
+
+/* DLL 注入路径（主路径）；失败时上层回退到 shellcode */
+bool inject_via_dll(HANDLE proc_handle, DWORD pid, HWND target_hwnd, DWORD affinity, bool target_is_wow64);
 
 #define WM_INJECT_FINISHED (WM_USER + 100)
 

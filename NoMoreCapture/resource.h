@@ -11,6 +11,8 @@
 #define IDI_ICON_PENDING                108
 #define IDI_ICON_USING                  109
 #define IDC_CURSOR_USING                110
+#define IDR_PAYLOAD32                   112
+#define IDR_PAYLOAD64                   113
 #define IDC_WHITELIST_RAD               1001
 #define IDC_ALL_WINDOW                  1002
 #define IDC_TRANSPARENT_RAD             1005
@@ -57,6 +59,7 @@
 #define ID_TRAY_ABOUT                   40024
 #define ID_TRAY_HELP                    40025
 #define ID_HIDE                         40026
+#define ID_TOGGLE_DECOY                 40027
 
 // Next default values for new objects
 // 

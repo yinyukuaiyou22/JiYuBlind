@@ -7,11 +7,20 @@
 .dll
 .lib
 .exp
+payload32.bin
+payload64.bin
+payload_out/
 
-# 针对 Visual Studio
+# Visual Studio
 .vs
 .user
 .suo
+.aps
 x64
+x86
 Debug
 Release
+
+# 探针/临时
+.probe/
+*.log

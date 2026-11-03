@@ -1,4 +1,5 @@
 #include "lilith_is_all_you_need.h"
+#include "decoy.h"
 
 enum {
     f_a = 0, // 捕获
@@ -16,6 +17,7 @@ void clean_context(struct context* ptr_ctx) {
         return;
     }
     if (ptr_ctx->win_hook) UnhookWinEvent(ptr_ctx->win_hook);
+    decoy_destroy(ptr_ctx);
     if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_h) == 1) {
         config_save(ptr_ctx); // 退出时保存配置
     }

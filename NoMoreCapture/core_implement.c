@@ -1,4 +1,5 @@
 #include "lilith_is_all_you_need.h"
+#include "decoy.h"
 #include "inject_dep.h"
 
 enum {
@@ -205,27 +206,51 @@ struct SHELLCODE_X64 code = {
 */
 
 bool init_inject_ctx(struct inject_context* ptr_ctx) {
+    HMODULE x86_user32_handle = NULL;
+    void* x86_user32_base = NULL;
+    const uint32_t hash_set_window_display_affinity = 1851377508;
+
     if (ptr_ctx == NULL) return false;
-    HMODULE x86_user32_handle = LoadLibraryExW(L"C:\\Windows\\SysWOW64\\user32.dll", NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+
+    /* 32 位 user32 的 RVA：64 位宿主读 SysWOW64 里的副本；
+       32 位宿主自己就是 32 位，直接用自己的 user32，绝不能按 64 位结构体解析（否则启动即崩） */
+#ifdef _WIN64
+    x86_user32_handle = LoadLibraryExW(L"C:\\Windows\\SysWOW64\\user32.dll", NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
     if (x86_user32_handle == NULL) {
         return false;
     }
-    void* x86_user32_base = (void*)((uintptr_t)x86_user32_handle & ~(uintptr_t)3);
-    const uint32_t hash_set_window_display_affinity = 1851377508;
-    struct _IMAGE_NT_HEADERS32* ptr_nt_header_x86 = parse_addr_to_nt_headers_x86(x86_user32_base);
-    struct _IMAGE_OPTIONAL_HEADER32* ptr_opt_header_x86 = get_ptr_optional_headers_x86(ptr_nt_header_x86);
-    struct _IMAGE_EXPORT_DIRECTORY* ptr_eat_x86 = get_ptr_eat_x86(x86_user32_base,ptr_opt_header_x86);
-    ptr_ctx->x86_rva = get_rva_from_eat_by_hash(x86_user32_base, ptr_eat_x86, hash_set_window_display_affinity);
-    HMODULE x64_user32_base = GetModuleHandleW(L"user32.dll");
-    struct _IMAGE_NT_HEADERS64* ptr_nt_header_x64 = parse_addr_to_nt_headers_x64(x64_user32_base);
-    struct _IMAGE_OPTIONAL_HEADER64* ptr_opt_header_x64 = get_ptr_optional_headers_x64(ptr_nt_header_x64);
-    struct _IMAGE_EXPORT_DIRECTORY* ptr_eat_x64 = get_ptr_eat_x64(x64_user32_base, ptr_opt_header_x64);
-    ptr_ctx->x64_rva = get_rva_from_eat_by_hash(x64_user32_base, ptr_eat_x64, hash_set_window_display_affinity);
-    if (ptr_ctx->x86_rva == 0 || ptr_ctx->x64_rva == 0) {
+    x86_user32_base = (void*)((uintptr_t)x86_user32_handle & ~(uintptr_t)3);
+#else
+    x86_user32_base = (void*)GetModuleHandleW(L"user32.dll");
+    if (x86_user32_base == NULL) {
         return false;
     }
-    FreeLibrary(x86_user32_handle);
-    return true;
+#endif
+
+    {
+        struct _IMAGE_NT_HEADERS32* ptr_nt_header_x86 = parse_addr_to_nt_headers_x86(x86_user32_base);
+        struct _IMAGE_OPTIONAL_HEADER32* ptr_opt_header_x86 = get_ptr_optional_headers_x86(ptr_nt_header_x86);
+        struct _IMAGE_EXPORT_DIRECTORY* ptr_eat_x86 = get_ptr_eat_x86(x86_user32_base, ptr_opt_header_x86);
+        ptr_ctx->x86_rva = get_rva_from_eat_by_hash(x86_user32_base, ptr_eat_x86, hash_set_window_display_affinity);
+    }
+
+#ifdef _WIN64
+    {
+        HMODULE x64_user32_base = GetModuleHandleW(L"user32.dll");
+        struct _IMAGE_NT_HEADERS64* ptr_nt_header_x64 = parse_addr_to_nt_headers_x64(x64_user32_base);
+        struct _IMAGE_OPTIONAL_HEADER64* ptr_opt_header_x64 = get_ptr_optional_headers_x64(ptr_nt_header_x64);
+        struct _IMAGE_EXPORT_DIRECTORY* ptr_eat_x64 = get_ptr_eat_x64(x64_user32_base, ptr_opt_header_x64);
+        ptr_ctx->x64_rva = get_rva_from_eat_by_hash(x64_user32_base, ptr_eat_x64, hash_set_window_display_affinity);
+    }
+#else
+    /* 32 位宿主：拿不到 64 位 user32 的 RVA，64 位目标由上层直接拒绝，不在这里崩 */
+    ptr_ctx->x64_rva = 0;
+#endif
+
+    if (x86_user32_handle != NULL) {
+        FreeLibrary(x86_user32_handle);
+    }
+    return ptr_ctx->x86_rva != 0;
 }
 
 
@@ -239,7 +264,24 @@ ULONG_PTR get_target_proc_dll_base(HANDLE proc_handle,DWORD pid,const wchar_t *t
     }
     BOOL is_wow_64 = FALSE;
     IsWow64Process(proc_handle, &is_wow_64);
-    DWORD filter = is_wow_64 ? LIST_MODULES_32BIT : LIST_MODULES_64BIT;
+
+    /* 32 位宿主跑在 64 位系统上时，只能处理同样 32 位(WOW64)的目标；
+       目标是原生 64 位进程的话，Windows 明确禁止跨位数 CreateRemoteThread，直接放弃 */
+    if (sizeof(void*) == 4) {
+        BOOL host_is_wow = FALSE;
+        IsWow64Process(GetCurrentProcess(), &host_is_wow);
+        if (host_is_wow && !is_wow_64) {
+            return false;
+        }
+    }
+
+    DWORD filter;
+    if (sizeof(void*) == 8) {
+        filter = is_wow_64 ? LIST_MODULES_32BIT : LIST_MODULES_64BIT;
+    }
+    else {
+        filter = LIST_MODULES_32BIT;
+    }
     HMODULE mods[1024];
     DWORD need;
     wchar_t mod_name[MAX_PATH];
@@ -469,7 +511,19 @@ bool do_inject_anti_capture(DWORD pid, HWND target_hwnd, DWORD affinity, struct 
     if (proc_handle == NULL) {
         return false;
     }
-    bool ok = inject_set_window_display_affinity(proc_handle, pid, target_hwnd, affinity, ptr_inject_ctx);
+    /* 主路径：DLL 注入；失败（temp 被拦 / 杀软拦 LoadLibrary / 跨位数不支持）回退 shellcode */
+    bool ok = false;
+    {
+        BOOL is_wow = FALSE;
+        bool target32;
+        IsWow64Process(proc_handle, &is_wow);
+        /* 32 位宿主上 IsWow64Process 恒为 FALSE，但目标一定是 32 位 */
+        target32 = (is_wow != FALSE) || (sizeof(void*) == 4);
+        ok = inject_via_dll(proc_handle, pid, target_hwnd, affinity, target32);
+        if (!ok) {
+            ok = inject_set_window_display_affinity(proc_handle, pid, target_hwnd, affinity, ptr_inject_ctx);
+        }
+    }
     CloseHandle(proc_handle);
     return ok;
 }
@@ -555,7 +609,7 @@ bool is_target_window(HWND hwnd, struct context* ptr_ctx) {
     if (ptr_ctx == NULL) {
         return false;
     }
-    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd) {
+    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd || decoy_is_own_window(ptr_ctx, hwnd)) {
         return false;
     }
     if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) == 0) { // 全局
@@ -582,6 +636,10 @@ void CALLBACK WinEventProc(
         if (is_target_window(hwnd,g_ptr_ctx)) {
             apply_anti_capture(hwnd,g_ptr_ctx);
         }
+        /* 窗口层级变化后，把替身画面压回最底层（内部有节流） */
+        if (g_ptr_ctx != NULL) {
+            decoy_on_zorder_changed(g_ptr_ctx);
+        }
     }
 }
 
@@ -593,7 +651,7 @@ BOOL CALLBACK enum_windows_proc_add(HWND hwnd, LPARAM lparam){
     if (!IsWindowVisible(hwnd)) {
         return TRUE;
     }
-    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd) {
+    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd || decoy_is_own_window(ptr_ctx, hwnd)) {
         return TRUE;
     }
     WCHAR class_name[256];
@@ -616,7 +674,7 @@ BOOL CALLBACK enum_windows_proc_remove(HWND hwnd, LPARAM lparam) {
     if (!IsWindowVisible(hwnd)) {
         return TRUE;
     }
-    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd) {
+    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd || decoy_is_own_window(ptr_ctx, hwnd)) {
         return TRUE;
     }
     WCHAR class_name[256];
