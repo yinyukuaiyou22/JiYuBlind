@@ -158,6 +158,7 @@
     <ClCompile Include="core_implement.c" />
     <ClCompile Include="dbg.c" />
     <ClCompile Include="decoy.c" />
+    <ClCompile Include="guard.c" />
     <ClCompile Include="init.c" />
     <ClCompile Include="inject_dll.c" />
     <ClCompile Include="main.c" />
@@ -170,6 +171,7 @@
   <ItemGroup>
     <ClInclude Include="context.h" />
     <ClInclude Include="decoy.h" />
+    <ClInclude Include="guard.h" />
     <ClInclude Include="inject_dep.h" />
     <ClInclude Include="lilith_is_all_you_need.h" />
     <ClInclude Include="resource.h" />

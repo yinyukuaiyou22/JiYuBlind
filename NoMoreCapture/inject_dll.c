@@ -21,6 +21,7 @@ ULONG_PTR get_target_proc_dll_base(HANDLE proc_handle, DWORD pid, const wchar_t*
 typedef struct jyb_args {
     ULONGLONG hwnd;
     DWORD     affinity;
+    DWORD     owner_pid;   /* 宿主 pid：载荷据此在宿主退出后自动收手 */
 } jyb_args;
 
 /* 诊断日志：JYB_INJECT_LOG=1 时把每一步写到 %TEMP%\jyb_inject_log.txt */
@@ -123,70 +124,60 @@ static const BYTE* payload_bytes(bool want64, DWORD* out_size) {
     return (const BYTE*)LockResource(glob);
 }
 
-/* 把内嵌 payload 落到 %TEMP%，返回路径。
+/* 把内嵌 payload 落到 %TEMP%。
  *
- * 关键：文件名必须**按目标进程 pid 唯一**。
- * 早期版本用固定名 jyb_payload_64.dll 且以独占方式(share=0)写入，
- * 结果第一个目标进程 LoadLibrary 之后该文件映像节被系统锁住，
- * 后续写入全部返回 ERROR_SHARING_VIOLATION(32)，
- * DLL 注入路径从第二个窗口起全部失效（全局模式尤其明显）。
- * 现在改成每个目标进程一个独立文件名，且以共享模式打开。
+ * 文件名按"目标进程 pid + 位数"固定（jyb_payload_64_<pid>.dll）。
+ * 早期版本用"每次调用都换一个带 tick 的新文件名"，配合后面的对账定时器会变成：
+ * 每轮对账都用新路径 LoadLibrary —— 同一个 DLL 在目标进程里被加载第二份、
+ * 起第二个守护线程，%TEMP% 里还会不断堆积 dll。现在路径固定，
+ * 已加载过的进程直接按模块名前缀找到基址调用，连文件都不用碰。
  */
-static const wchar_t* payload_temp_path(bool want64, DWORD target_pid) {
-    /* 每个目标进程一份独立文件：缓存 8 个（环形），键 = pid */
-    #define PAYLOAD_CACHE_SLOTS 8
-    static wchar_t cache[PAYLOAD_CACHE_SLOTS][MAX_PATH] = { { 0 } };
-    static DWORD cache_pid[PAYLOAD_CACHE_SLOTS] = { 0 };
-    static bool  cache_64[PAYLOAD_CACHE_SLOTS] = { 0 };
-    static int   cache_next = 0;
-
+static bool payload_prepare(bool want64, DWORD target_pid, wchar_t* out, size_t cap) {
     const BYTE* data;
     DWORD size = 0;
     wchar_t temp[MAX_PATH] = { 0 };
     HANDLE file;
     DWORD written = 0;
-    int slot_idx;
-    wchar_t* slot;
-
-    /* 命中：同 pid + 同位数 */
-    for (slot_idx = 0; slot_idx < PAYLOAD_CACHE_SLOTS; slot_idx++) {
-        if (cache_pid[slot_idx] == target_pid && cache_64[slot_idx] == want64 && cache[slot_idx][0] != L'\0') {
-            DWORD attr = GetFileAttributesW(cache[slot_idx]);
-            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-                return cache[slot_idx];
-            }
-            cache[slot_idx][0] = L'\0';
-        }
-    }
+    DWORD attr;
 
     data = payload_bytes(want64, &size);
-    if (data == NULL || size == 0) return NULL;
+    if (data == NULL || size == 0) return false;
 
     GetTempPathW(MAX_PATH, temp);
-    slot_idx = cache_next;
-    cache_next = (cache_next + 1) % PAYLOAD_CACHE_SLOTS;
-    slot = cache[slot_idx];
-    StringCchPrintfW(slot, MAX_PATH, L"%sjyb_payload_%s_%lu_%lu.dll",
-                     temp, want64 ? L"64" : L"32",
-                     (unsigned long)target_pid, (unsigned long)GetTickCount());
+    StringCchPrintfW(out, cap, L"%sjyb_payload_%s_%lu.dll",
+                     temp, want64 ? L"64" : L"32", (unsigned long)target_pid);
 
-    /* 共享模式：即使同名文件已被别的进程加载，也能覆盖写入 */
-    file = CreateFileW(slot, GENERIC_WRITE,
+    /* 已经落过盘的同名文件：内容来自同一份内嵌资源，直接复用 */
+    attr = GetFileAttributesW(out);
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return true;
+    }
+
+    file = CreateFileW(out, GENERIC_WRITE,
                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                        NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
-        slot[0] = L'\0';
-        return NULL;
-    }
+    if (file == INVALID_HANDLE_VALUE) return false;
     WriteFile(file, data, size, &written, NULL);
     CloseHandle(file);
-    if (written != size) {
-        slot[0] = L'\0';
-        return NULL;
+    return written == size;
+}
+
+/* 在目标任务里按前缀找已加载的载荷，避免重复 LoadLibrary */
+static HMODULE find_remote_payload(HANDLE proc, bool target32) {
+    HMODULE mods[1024];
+    DWORD need = 0;
+    DWORD filter = target32 ? LIST_MODULES_32BIT : LIST_MODULES_64BIT;
+    wchar_t name[MAX_PATH];
+    DWORD cnt, i;
+
+    if (!EnumProcessModulesEx(proc, mods, sizeof(mods), &need, filter)) return NULL;
+    cnt = need / sizeof(HMODULE);
+    for (i = 0; i < cnt; i++) {
+        if (GetModuleBaseNameW(proc, mods[i], name, MAX_PATH)) {
+            if (_wcsnicmp(name, L"jyb_payload_", 12) == 0) return mods[i];
+        }
     }
-    cache_pid[slot_idx] = target_pid;
-    cache_64[slot_idx] = want64;
-    return slot;
+    return NULL;
 }
 
 /* ---------------- 远端加载 DLL ---------------- */
@@ -213,29 +204,10 @@ static DWORD export_rva_of_system_dll(const wchar_t* dll_path, const char* fn) {
     return rva;
 }
 
-static HMODULE find_remote_module(HANDLE proc, bool target32, const wchar_t* dll_name) {
-    HMODULE mods[1024];
-    DWORD need = 0;
-    DWORD filter = target32 ? LIST_MODULES_32BIT : LIST_MODULES_64BIT;
-    wchar_t name[MAX_PATH];
-
-    if (!EnumProcessModulesEx(proc, mods, sizeof(mods), &need, filter)) return NULL;
-    {
-        DWORD cnt = need / sizeof(HMODULE);
-        DWORD i;
-        for (i = 0; i < cnt; i++) {
-            if (GetModuleBaseNameW(proc, mods[i], name, MAX_PATH)) {
-                if (_wcsicmp(name, dll_name) == 0) return mods[i];
-            }
-        }
-    }
-    return NULL;
-}
-
 /* ---------------- 对外入口 ---------------- */
 
 bool inject_via_dll(HANDLE proc_handle, DWORD pid, HWND target_hwnd, DWORD affinity, bool target_is_wow64) {
-    const wchar_t* dll_path;
+    wchar_t dll_path[MAX_PATH] = { 0 };
     const BYTE* data;
     DWORD data_size = 0, export_rva;
     SIZE_T path_bytes;
@@ -246,84 +218,90 @@ bool inject_via_dll(HANDLE proc_handle, DWORD pid, HWND target_hwnd, DWORD affin
     HANDLE thread;
     jyb_args args;
     pe_view v;
+    HMODULE remote_base = NULL;
+    bool wrote_file = false;
     bool ok = false;
+    bool want64 = !target_is_wow64;
 
     if (proc_handle == NULL || target_hwnd == NULL) return false;
 
-    dll_path = payload_temp_path(target_is_wow64 ? false : true, pid);
-    if (dll_path == NULL) { jyb_log(L"payload_temp_path", FALSE, GetLastError()); return false; }
-    jyb_log(L"payload_temp_path", TRUE, 0);
+    /* 0) 载荷已经在这个进程里了？那就只调一次导出函数（对账定时器会频繁走到这里） */
+    remote_base = find_remote_payload(proc_handle, !want64);
 
-    data = payload_bytes(target_is_wow64 ? false : true, &data_size);
-    if (data == NULL || data_size == 0) { jyb_log(L"payload_bytes", FALSE, GetLastError()); return false; }
-    if (!pe_open(data, data_size, &v)) { jyb_log(L"pe_open", FALSE, 0); return false; }
-    export_rva = pe_find_export(&v, "JybApply");
-    if (export_rva == 0) { jyb_log(L"pe_find_export(JybApply)", FALSE, 0); return false; }
-    jyb_log(L"pe_find_export(JybApply)", TRUE, export_rva);
+    if (remote_base == NULL) {
+        if (!payload_prepare(want64, pid, dll_path, MAX_PATH)) {
+            jyb_log(L"payload_prepare", FALSE, GetLastError());
+            return false;
+        }
+        wrote_file = (GetFileAttributesW(dll_path) != INVALID_FILE_ATTRIBUTES);
 
-    /* 1) 把 DLL 路径写进目标进程 */
-    path_bytes = (wcslen(dll_path) + 1) * sizeof(wchar_t);
-    remote_path = VirtualAllocEx(proc_handle, NULL, path_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (remote_path == NULL) { jyb_log(L"VirtualAllocEx(path)", FALSE, GetLastError()); return false; }
-    if (!WriteProcessMemory(proc_handle, remote_path, dll_path, path_bytes, NULL)) {
-        jyb_log(L"WriteProcessMemory(path)", FALSE, GetLastError()); goto cleanup;
+        /* 1) 把 DLL 路径写进目标进程 */
+        path_bytes = (wcslen(dll_path) + 1) * sizeof(wchar_t);
+        remote_path = VirtualAllocEx(proc_handle, NULL, path_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (remote_path == NULL) { jyb_log(L"VirtualAllocEx(path)", FALSE, GetLastError()); return false; }
+        if (!WriteProcessMemory(proc_handle, remote_path, dll_path, path_bytes, NULL)) {
+            jyb_log(L"WriteProcessMemory(path)", FALSE, GetLastError()); goto cleanup;
+        }
+
+        /* 2) 找到目标进程内 kernel32 的 LoadLibraryW 地址（跨架构要取对应位数的副本） */
+        k32_base = (HMODULE)get_target_proc_dll_base(proc_handle, pid, L"kernel32.dll");
+        if (k32_base == NULL) { jyb_log(L"get_target_proc_dll_base(kernel32)", FALSE, GetLastError()); goto cleanup; }
+        jyb_log(L"get_target_proc_dll_base(kernel32)", TRUE, (DWORD)(ULONG_PTR)k32_base);
+
+        loadlib_rva = export_rva_of_system_dll(
+            target_is_wow64 ? L"C:\\Windows\\SysWOW64\\kernel32.dll" : L"C:\\Windows\\System32\\kernel32.dll",
+            "LoadLibraryW");
+        if (loadlib_rva == 0) { jyb_log(L"export_rva_of_system_dll(LoadLibraryW)", FALSE, GetLastError()); goto cleanup; }
+
+        /* 3) 远程 LoadLibraryW */
+        thread = CreateRemoteThread(proc_handle, NULL, 0,
+                                    (LPTHREAD_START_ROUTINE)((ULONG_PTR)k32_base + loadlib_rva),
+                                    remote_path, 0, NULL);
+        if (thread == NULL) { jyb_log(L"CreateRemoteThread(LoadLibraryW)", FALSE, GetLastError()); goto cleanup; }
+        WaitForSingleObject(thread, 15000);
+        CloseHandle(thread);
+
+        /* 4) 找到远端模块基址（不能用 GetExitCodeThread 取 HMODULE，64 位会被截断） */
+        remote_base = find_remote_payload(proc_handle, !want64);
+        if (remote_base == NULL) { jyb_log(L"find_remote_payload(load)", FALSE, GetLastError()); goto cleanup; }
     }
 
-    /* 2) 找到目标进程内 kernel32 的 LoadLibraryW 地址（跨架构要取对应位数的副本） */
-    k32_base = (HMODULE)get_target_proc_dll_base(proc_handle, pid, L"kernel32.dll");
-    if (k32_base == NULL) { jyb_log(L"get_target_proc_dll_base(kernel32)", FALSE, GetLastError()); goto cleanup; }
-    jyb_log(L"get_target_proc_dll_base(kernel32)", TRUE, (DWORD)(ULONG_PTR)k32_base);
+    /* 5) 导出表 RVA 从内嵌资源里读，和远端加载的是同一份二进制 */
+    data = payload_bytes(want64, &data_size);
+    if (data == NULL || data_size == 0) { jyb_log(L"payload_bytes", FALSE, GetLastError()); goto cleanup; }
+    if (!pe_open(data, data_size, &v)) { jyb_log(L"pe_open", FALSE, 0); goto cleanup; }
+    export_rva = pe_find_export(&v, "JybMaintain");
+    if (export_rva == 0) { jyb_log(L"pe_find_export(JybMaintain)", FALSE, 0); goto cleanup; }
 
-    loadlib_rva = export_rva_of_system_dll(
-        target_is_wow64 ? L"C:\\Windows\\SysWOW64\\kernel32.dll" : L"C:\\Windows\\System32\\kernel32.dll",
-        "LoadLibraryW");
-    if (loadlib_rva == 0) { jyb_log(L"export_rva_of_system_dll(LoadLibraryW)", FALSE, GetLastError()); goto cleanup; }
-    jyb_log(L"export_rva_of_system_dll(LoadLibraryW)", TRUE, loadlib_rva);
+    /* 6) 参数结构体写进目标进程，调用 JybMaintain(args) */
+    args.hwnd = (ULONGLONG)(ULONG_PTR)target_hwnd;
+    args.affinity = affinity;
+    args.owner_pid = GetCurrentProcessId();
+    remote_args = VirtualAllocEx(proc_handle, NULL, sizeof(args), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (remote_args == NULL) { jyb_log(L"VirtualAllocEx(args)", FALSE, GetLastError()); goto cleanup; }
+    if (!WriteProcessMemory(proc_handle, remote_args, &args, sizeof(args), NULL)) {
+        jyb_log(L"WriteProcessMemory(args)", FALSE, GetLastError()); goto cleanup;
+    }
 
-    /* 3) 远程 LoadLibraryW */
     thread = CreateRemoteThread(proc_handle, NULL, 0,
-                                (LPTHREAD_START_ROUTINE)((ULONG_PTR)k32_base + loadlib_rva),
-                                remote_path, 0, NULL);
-    if (thread == NULL) { jyb_log(L"CreateRemoteThread(LoadLibraryW)", FALSE, GetLastError()); goto cleanup; }
-    WaitForSingleObject(thread, 15000);
-    CloseHandle(thread);
-    jyb_log(L"CreateRemoteThread(LoadLibraryW)", TRUE, 0);
-
-    /* 4) 找到远端模块基址（不能用 GetExitCodeThread 取 HMODULE，64 位会被截断） */
+                                (LPTHREAD_START_ROUTINE)((ULONG_PTR)remote_base + export_rva),
+                                remote_args, 0, NULL);
+    if (thread == NULL) { jyb_log(L"CreateRemoteThread(JybMaintain)", FALSE, GetLastError()); goto cleanup; }
     {
-        const wchar_t* base_name = wcsrchr(dll_path, L'\\');
-        HMODULE remote_base = find_remote_module(proc_handle, target_is_wow64, base_name ? base_name + 1 : dll_path);
-        if (remote_base == NULL) { jyb_log(L"find_remote_module(payload)", FALSE, GetLastError()); goto cleanup; }
-        jyb_log(L"find_remote_module(payload)", TRUE, (DWORD)(ULONG_PTR)remote_base);
-
-        /* 5) 参数结构体写进目标进程 */
-        args.hwnd = (ULONGLONG)(ULONG_PTR)target_hwnd;
-        args.affinity = affinity;
-        remote_args = VirtualAllocEx(proc_handle, NULL, sizeof(args), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (remote_args == NULL) goto cleanup;
-        if (!WriteProcessMemory(proc_handle, remote_args, &args, sizeof(args), NULL)) goto cleanup;
-
-        /* 6) 调用 JybApply(args) */
-        thread = CreateRemoteThread(proc_handle, NULL, 0,
-                                    (LPTHREAD_START_ROUTINE)((ULONG_PTR)remote_base + export_rva),
-                                    remote_args, 0, NULL);
-        if (thread == NULL) { jyb_log(L"CreateRemoteThread(JybApply)", FALSE, GetLastError()); goto cleanup; }
-        {
-            DWORD wait_ret = WaitForSingleObject(thread, 10000);
-            DWORD exit_code = 0;
-            if (wait_ret == WAIT_OBJECT_0 && GetExitCodeThread(thread, &exit_code)) {
-                ok = (exit_code != 0);
-            }
-            jyb_log(L"JybApply result", ok, exit_code);
-            CloseHandle(thread);
+        DWORD wait_ret = WaitForSingleObject(thread, 10000);
+        DWORD exit_code = 0;
+        if (wait_ret == WAIT_OBJECT_0 && GetExitCodeThread(thread, &exit_code)) {
+            ok = (exit_code != 0);
         }
+        jyb_log(L"JybMaintain result", ok, exit_code);
+        CloseHandle(thread);
     }
 
 cleanup:
     if (remote_args != NULL) VirtualFreeEx(proc_handle, remote_args, 0, MEM_RELEASE);
     if (remote_path != NULL) VirtualFreeEx(proc_handle, remote_path, 0, MEM_RELEASE);
     /* 注入失败时清掉临时 DLL，避免 %TEMP% 堆积；成功时不能删（目标进程还映射着它） */
-    if (!ok && dll_path != NULL) {
+    if (!ok && wrote_file && remote_base == NULL) {
         DeleteFileW(dll_path);
     }
     return ok;

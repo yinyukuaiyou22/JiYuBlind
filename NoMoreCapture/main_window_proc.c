@@ -1,6 +1,7 @@
 #include "context.h"
 #include "lilith_is_all_you_need.h"
 #include "decoy.h"
+#include "guard.h"
 
 enum {
     f_a = 0, // 捕获
@@ -238,6 +239,18 @@ LRESULT CALLBACK lilith_wndproc(
         PostQuitMessage(0);
         return 0;
     }
+    case WM_GUARD_TICK: {
+        struct context* ptr_ctx = (struct context*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        guard_tick(ptr_ctx);
+        return 0;
+    }
+    case WM_DISPLAYCHANGE:      /* 远控/改分辨率/切显示器：重算一遍 */
+    case WM_SETTINGCHANGE:
+    case WM_WTSSESSION_CHANGE: {
+        struct context* ptr_ctx = (struct context*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        guard_kick(ptr_ctx);
+        break;
+    }
     case WM_HOTKEY: {
         if (wparam == HOTKEY_ID) {
             struct context* ptr_ctx = (struct context*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -251,9 +264,11 @@ LRESULT CALLBACK lilith_wndproc(
 
                     // 修正 3：隐藏目标窗口（仅针对白名单模式生效，因为全局模式不知道目标是谁）
                     if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) != 0) {
-                        for (int i = 0; i < 256; i++) {
-                            if (ptr_ctx->target[i] != NULL && IsWindow(ptr_ctx->target[i])) {
-                                ShowWindow(ptr_ctx->target[i], show_cmd);
+                        int n_entry = guard_count(ptr_ctx);
+                        for (int i = 0; i < n_entry; i++) {
+                            HWND target_hwnd = guard_hwnd_at(ptr_ctx, i);
+                            if (target_hwnd != NULL && IsWindow(target_hwnd)) {
+                                ShowWindow(target_hwnd, show_cmd);
                             }
                         }
                     }

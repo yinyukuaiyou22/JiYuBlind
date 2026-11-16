@@ -1,5 +1,6 @@
 #include "lilith_is_all_you_need.h"
 #include "decoy.h"
+#include "guard.h"
 #include "inject_dep.h"
 
 enum {
@@ -398,7 +399,7 @@ static bool build_shellcode_x86_ex(HWND target_hwnd, uintptr_t api_abs_addr, DWO
     return true;
 }
 
-static bool is_unsafe_process(DWORD pid) {
+bool is_unsafe_process_pid(DWORD pid) {
     if (pid == 0) return true;
     HANDLE proc_handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (proc_handle == NULL) {
@@ -528,65 +529,6 @@ bool do_inject_anti_capture(DWORD pid, HWND target_hwnd, DWORD affinity, struct 
     return ok;
 }
 
-bool inject_apply_anti_capture(HWND hwnd, struct context* ptr_ctx, struct inject_context* ptr_inject_ctx) {
-    if (!IsWindow(hwnd) || ptr_ctx == NULL || ptr_inject_ctx == NULL) {
-        return false;
-    }
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0) return false;
-
-    DWORD affinity = WDA_EXCLUDEFROMCAPTURE;
-    if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_d) == 0) {
-        affinity = WDA_MONITOR;
-    }
-    return do_inject_anti_capture(pid, hwnd, affinity, ptr_inject_ctx);
-}
-
-bool inject_remove_anti_capture(HWND hwnd, struct inject_context* ptr_inject_ctx) {
-    if (!IsWindow(hwnd) || ptr_inject_ctx == NULL) {
-        return false;
-    }
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0) return false;
-    return do_inject_anti_capture(pid, hwnd, WDA_NONE, ptr_inject_ctx);
-}
-
-void apply_anti_capture(HWND hwnd, struct context* ptr_ctx) {
-    if (!IsWindow(hwnd)) return;
-    if (ptr_ctx == NULL) return;
-
-    // 防御：绝不能动 explorer 的桌面壁纸层和任务栏 否则 DWM 合成层会被打穿
-    WCHAR class_name[256] = { 0 };
-    GetClassNameW(hwnd, class_name, 256);
-    if (wcscmp(class_name, L"Progman") == 0 ||       // 桌面背景
-        wcscmp(class_name, L"WorkerW") == 0 ||       // 桌面背景的另一层
-        wcscmp(class_name, L"Shell_TrayWnd") == 0)   // 底部任务栏
-    {
-        return;
-    }
-
-    DWORD affinity = WDA_EXCLUDEFROMCAPTURE;
-    if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_d) == 0) {
-        affinity = WDA_MONITOR;
-    }
-
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0) return;
-    if (is_unsafe_process(pid)) {
-        return;
-    }
-    // 自己进程的窗口走老路径 不用绕一圈注入
-    if (pid == GetCurrentProcessId()) {
-        SetWindowDisplayAffinity(hwnd, affinity);
-        return;
-    }
-
-    do_inject_anti_capture(pid, hwnd, affinity, &ptr_ctx->inject_ctx);
-}
-
 
 void remove_anti_capture(HWND hwnd, struct context* ptr_ctx) {
     if (!IsWindow(hwnd)) return;
@@ -598,29 +540,10 @@ void remove_anti_capture(HWND hwnd, struct context* ptr_ctx) {
         SetWindowDisplayAffinity(hwnd, WDA_NONE);
         return;
     }
-    if (is_unsafe_process(pid)) {
+    if (is_unsafe_process_pid(pid)) {
         return;
     }
     do_inject_anti_capture(pid, hwnd, WDA_NONE, &ptr_ctx->inject_ctx);
-}
-
-bool is_target_window(HWND hwnd, struct context* ptr_ctx) {
-    if (!IsWindow(hwnd)) return false;
-    if (ptr_ctx == NULL) {
-        return false;
-    }
-    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd || decoy_is_own_window(ptr_ctx, hwnd)) {
-        return false;
-    }
-    if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) == 0) { // 全局
-        return true;
-    }
-    for (int i = 0; i < 128; i++) {
-        if (ptr_ctx->target[i] == hwnd) {
-            return true;
-        }
-    }
-    return false;
 }
 
 void CALLBACK WinEventProc(
@@ -633,37 +556,16 @@ void CALLBACK WinEventProc(
     DWORD dwmsEventTime){
     if (idObject != OBJID_WINDOW || hwnd == NULL) return;
     if (event == EVENT_OBJECT_SHOW || event == EVENT_OBJECT_CREATE) {
-        if (is_target_window(hwnd,g_ptr_ctx)) {
-            apply_anti_capture(hwnd,g_ptr_ctx);
-        }
-        /* 窗口层级变化后，把替身画面压回最底层（内部有节流） */
+        /* 这里曾经直接做注入：EnumProcessModulesEx + CreateRemoteThread + Wait，
+           全发生在 UI 线程上，窗口一多就把消息循环堵住、钩子事件被丢，
+           表现出来就是"用着用着就不灵了"。现在只投递一次合并过的唤醒，
+           真正的注入交给 guard 的 worker 线程（见 guard.c）。 */
         if (g_ptr_ctx != NULL) {
+            guard_kick(g_ptr_ctx);
+            /* 窗口层级变化后，把替身画面压回最底层（内部有节流） */
             decoy_on_zorder_changed(g_ptr_ctx);
         }
     }
-}
-
-BOOL CALLBACK enum_windows_proc_add(HWND hwnd, LPARAM lparam){
-    struct context* ptr_ctx = (struct context*)lparam;
-    if (ptr_ctx == NULL) {
-        return TRUE;
-    }
-    if (!IsWindowVisible(hwnd)) {
-        return TRUE;
-    }
-    if (hwnd == ptr_ctx->window_hwnd || hwnd == ptr_ctx->panel_ctx.panel_hwnd || decoy_is_own_window(ptr_ctx, hwnd)) {
-        return TRUE;
-    }
-    WCHAR class_name[256];
-    GetClassNameW(hwnd, class_name, 256);
-    if (wcscmp(class_name, L"Progman") == 0 ||    // 桌面背景
-        wcscmp(class_name, L"WorkerW") == 0 ||    // 桌面背景的另一层
-        wcscmp(class_name, L"Shell_TrayWnd") == 0 // 底部任务栏
-        ){
-        return TRUE; // 跳过系统底层 UI
-    }
-    apply_anti_capture(hwnd, ptr_ctx);
-    return TRUE;
 }
 
 BOOL CALLBACK enum_windows_proc_remove(HWND hwnd, LPARAM lparam) {

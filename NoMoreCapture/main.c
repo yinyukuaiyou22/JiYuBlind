@@ -1,5 +1,6 @@
 #include "lilith_is_all_you_need.h"
 #include "decoy.h"
+#include "guard.h"
 
 inline void dbg_ulw(struct context* ptr_ctx) {
     if (ptr_ctx == NULL || ptr_ctx->bits == NULL) {
@@ -54,6 +55,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         return -1;
     }
 
+    /* 会话切换（锁屏/解锁、远程连接上/下）时叫醒对账：远控场景最容易在这一刻掉保护 */
+    WTSRegisterSessionNotification(ctx.window_hwnd, NOTIFY_FOR_THIS_SESSION);
+
     if (init_panel(&ctx) == false) {
         out(L"创建Control Panel失败", err);
         return -1;
@@ -93,14 +97,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     g_ptr_ctx = &ctx;
 
-    /* 自检用：JYB_TEST_HWND=<十进制窗口句柄> 时，启动就对指定窗口做一次保护，
-       便于在没有 UI 交互的情况下验证注入链路是否真的写进了目标进程 */
+    /* 亲和性对账（兜底保险）：所有阻塞注入都在它的 worker 线程里，
+       主线程只做枚举和记账，WinEvent 钩子不再直接注入 */
+    if (!guard_init(&ctx)) {
+        out(L"初始化对账线程失败", err);
+    }
+
+    /* 自检用：JYB_TEST_HWND=<十进制窗口句柄> 时，把该窗口所属进程当成"白名单里的一项"
+       并直接开启对账，便于在没有 UI 交互的情况下验证整条链路（注入 + 守护 + 重绑） */
     {
         wchar_t buf[64] = { 0 };
         if (GetEnvironmentVariableW(L"JYB_TEST_HWND", buf, 64) > 0) {
             HWND probe_hwnd = (HWND)(ULONG_PTR)_wcstoui64(buf, NULL, 10);
             if (probe_hwnd != NULL && IsWindow(probe_hwnd)) {
-                apply_anti_capture(probe_hwnd, &ctx);
+                guard_add_entry(&ctx, probe_hwnd);
+                guard_arm(&ctx, true);
+                guard_flush(&ctx, 15000);
             }
         }
     } // 为了给钩子

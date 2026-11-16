@@ -14,10 +14,14 @@
 #include <psapi.h>
 #include "resource.h"
 #include <commctrl.h>
+#include <wtsapi32.h>
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "wtsapi32.lib")
 #pragma comment(lib, "psapi.lib")
 
 #define WM_TRAYICON (WM_USER + 1)
+
+#define WM_GUARD_TICK      (WM_USER + 101)
 
 enum {
     threshold = 3
@@ -85,6 +89,44 @@ struct decoy_ctx {
 };
 
 
+/* ---- 亲和性对账模块（guard.c）：白名单按进程记账，见 guard.h 顶部注释 ---- */
+#define GUARD_MAX_ENTRIES 128
+#define GUARD_MAX_PIDS     64
+
+struct guard_entry {
+    HWND    hwnd;             /* 最近一次绑定到的窗口（可能已销毁） */
+    DWORD   pid;              /* 绑定时所属进程 */
+    wchar_t exe[MAX_PATH];    /* 进程映像名：进程重启/窗口重建后据此重绑 */
+};
+
+struct guard_pid_state {
+    DWORD pid;
+    HWND  hwnd;               /* 用来触发注入的代表窗口 */
+    DWORD want;               /* 期望的亲和性 */
+    DWORD last_ok;            /* 上一次下发成功的 tick */
+    DWORD last_try;
+    bool  ok;
+    volatile LONG pending;
+};
+
+struct guard_ctx {
+    struct guard_entry entries[GUARD_MAX_ENTRIES];
+    int  count;
+
+    struct guard_pid_state pids[GUARD_MAX_PIDS];
+
+    bool armed;               /* 用户点过"应用"之后为 true */
+    volatile LONG dirty;      /* WinEvent 合并标记 */
+    volatile LONG stop;
+    DWORD last_force;         /* 上一次全量重发的 tick */
+
+    UINT_PTR timer;
+    HANDLE   worker;
+    HANDLE   wake;
+    HANDLE   idle;
+    CRITICAL_SECTION lock;
+};
+
 struct context {
     HINSTANCE instance;
     struct basic_info { // 嵌套是非标准写法 但是就这样吧
@@ -125,7 +167,7 @@ struct context {
     struct inject_context inject_ctx;
     struct decoy_ctx decoy;
     HWINEVENTHOOK win_hook;
-    HWND target[256];
+    struct guard_ctx guard;
 };
 
 
@@ -178,14 +220,15 @@ void config_save(struct context* ptr_ctx);
 struct context* g_ptr_ctx;
 
 void remove_anti_capture(HWND hwnd, struct context* ptr_ctx);
-void apply_anti_capture(HWND hwnd, struct context* ptr_ctx);
-bool is_target_window(HWND hwnd, struct context* ptr_ctx);
-BOOL CALLBACK enum_windows_proc_add(HWND hwnd, LPARAM lparam);
 BOOL CALLBACK enum_windows_proc_remove(HWND hwnd, LPARAM lparam);
 
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
 
 bool init_inject_ctx(struct inject_context* ptr_ctx);
+
+/* 注入（worker 线程调用；同步阻塞） */
+bool do_inject_anti_capture(DWORD pid, HWND target_hwnd, DWORD affinity, struct inject_context* ptr_inject_ctx);
+bool is_unsafe_process_pid(DWORD pid);
 
 /* DLL 注入路径（主路径）；失败时上层回退到 shellcode */
 bool inject_via_dll(HANDLE proc_handle, DWORD pid, HWND target_hwnd, DWORD affinity, bool target_is_wow64);

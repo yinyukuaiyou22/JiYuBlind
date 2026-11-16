@@ -1,4 +1,5 @@
 #include "lilith_is_all_you_need.h"
+#include "guard.h"
 
 //int bitwise 说明如下
 //至少16位，msvc下32位
@@ -100,16 +101,20 @@ DWORD WINAPI apply_inject_worker_thread(LPVOID lpParam) {
 			}
 		}
 	}
+	/* 记账交给 guard：白名单按进程存，之后新窗口/进程重启都由它自动重绑 */
+	guard_clear_entries(task->main_ctx);
 	if (task->is_global_mode) {
-		EnumWindows(enum_windows_proc_add, (LPARAM)task->main_ctx);
+		guard_arm(task->main_ctx, true);
 	}
 	else {
 		for (int i = 0; i < task->add_count; i++) {
 			if (task->hwnd_to_add[i] != NULL) {
-				apply_anti_capture(task->hwnd_to_add[i], task->main_ctx);
+				guard_add_entry(task->main_ctx, task->hwnd_to_add[i]);
 			}
 		}
+		guard_arm(task->main_ctx, true);
 	}
+	guard_flush(task->main_ctx, 20000);   /* 首轮下发做完再放开按钮 */
 	PostMessageW(task->main_ctx->panel_ctx.panel_hwnd, WM_INJECT_FINISHED, 0, 0);
 	free(task);
 	return 0;
@@ -212,9 +217,11 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 			if (ptr_ctx->panel_ctx.is_boss_key_hidden) {
 				ptr_ctx->panel_ctx.is_boss_key_hidden = false;
 				if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) != 0) { // 如果旧状态是白名单
-					for (int i = 0; i < 256; i++) {
-						if (ptr_ctx->target[i] != NULL && IsWindow(ptr_ctx->target[i])) {
-							ShowWindow(ptr_ctx->target[i], SW_SHOW);
+					int n_entry = guard_count(ptr_ctx);
+					for (int i = 0; i < n_entry; i++) {
+						HWND target_hwnd = guard_hwnd_at(ptr_ctx, i);
+						if (target_hwnd != NULL && IsWindow(target_hwnd)) {
+							ShowWindow(target_hwnd, SW_SHOW);
 						}
 					}
 				}
@@ -322,22 +329,21 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 				task->remove_global = true; // 告诉线程：去全局卸载
 			}
 			else {
+				int n_entry = guard_count(ptr_ctx);
 				task->remove_global = false;
-				for (int i = 0; i < 128; i++) {
-					if (ptr_ctx->target[i] != NULL) {
-						task->hwnd_to_remove[task->remove_count++] = ptr_ctx->target[i];
+				for (int i = 0; i < n_entry && task->remove_count < 256; i++) {
+					HWND target_hwnd = guard_hwnd_at(ptr_ctx, i);
+					if (target_hwnd != NULL) {
+						task->hwnd_to_remove[task->remove_count++] = target_hwnd;
 					}
 				}
 			}
-			// 清空现有的 target 记录
-			memset(ptr_ctx->target, 0, sizeof(ptr_ctx->target));
 
 			if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) != 0) {
 				// 白名单模式
 				task->is_global_mode = false;
-				for (int i = 0; i < cnt_elems; i++) {
+				for (int i = 0; i < cnt_elems && task->add_count < 256; i++) {
 					HWND curr_hwnd = (HWND)SendMessageW(list_box_handle, LB_GETITEMDATA, i, 0);
-					ptr_ctx->target[i] = curr_hwnd; // 存入上下文以便后续追踪
 					task->hwnd_to_add[task->add_count++] = curr_hwnd;
 				}
 			}
@@ -422,18 +428,7 @@ INT_PTR CALLBACK dlg_proc(HWND hwnd, UINT umsg, WPARAM wparam, LPARAM lparam) {
 	case WM_DESTROY: {
 		struct context* ptr_ctx = (struct context*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 		if (ptr_ctx != NULL) {
-			if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_c) != 0) {
-				// 白名单模式清理
-				for (int i = 0; i < 128; i++) {
-					if (ptr_ctx->target[i] != NULL) {
-						remove_anti_capture(ptr_ctx->target[i], ptr_ctx);
-					}
-				}
-			}
-			else {
-				// 全局模式清理
-				EnumWindows(enum_windows_proc_remove, (LPARAM)ptr_ctx);
-			}
+			guard_remove_all(ptr_ctx);
 			if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, f_f) == 1) {
 				UnregisterHotKey(ptr_ctx->window_hwnd, HOTKEY_ID);
 			}

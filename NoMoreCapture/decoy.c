@@ -17,6 +17,7 @@
 
 #include "lilith_is_all_you_need.h"
 #include "decoy.h"
+#include "guard.h"
 
 #include <stdio.h>
 #include <dwmapi.h>
@@ -259,9 +260,11 @@ static int decoy_collect_targets(struct context* ptr_ctx, HWND* out, int cap) {
     }
     /* 白名单模式：用现有 target[] 列表 */
     if (CHECK_BIT(ptr_ctx->panel_ctx.bitwise, 2 /* f_c */) != 0) {
-        for (i = 0; i < 256 && n < cap; i++) {
-            if (ptr_ctx->target[i] != NULL && IsWindow(ptr_ctx->target[i])) {
-                out[n++] = ptr_ctx->target[i];
+        int cnt = guard_count(ptr_ctx);
+        for (i = 0; i < cnt && n < cap; i++) {
+            HWND target = guard_hwnd_at(ptr_ctx, i);
+            if (target != NULL && IsWindow(target)) {
+                out[n++] = target;
             }
         }
         return n;
